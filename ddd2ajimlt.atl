@@ -1,0 +1,440 @@
+
+
+
+module ddd2ajimlt;
+create OUT : AJI from IN : DDD;
+
+-- Quick way to check if an element has a specific Stereotype applied
+helper context DDD!Element def: hasStereotype(stereotype : String) : Boolean =
+	self.getAppliedStereotypes() -> exists(e|e.name=stereotype);
+
+
+--Can be used if the type of a property is a primitive type from UML (String,Integer,Boolean etc.)
+helper context DDD!Property def: isPrimitiveType(type : String): Boolean =
+	if self.type.oclIsUndefined() then
+		false
+			else
+				if self.type.oclIsTypeOf(DDD!PrimitiveType) and self.type.name = type then
+			true
+			else
+				false
+			endif
+		
+				endif;
+
+-- retreive the value of the Aggregate Root Property of an Element that has the AggregatePart Stereotype from DDD applied
+helper context DDD!Element def: getAggregateRoot() : DDD!Element =
+	if self.hasStereotype('AggregatePart')
+	then
+		self.getValue(self.getAppliedStereotype('RootElement::AggregatePart'),'aggregateRoot')
+	else
+		self
+	endif;
+
+helper context DDD!Class def: getAllAssocationsFromProperties() : Sequence(DDD!Assocation) =
+	self.attribute -> iterate(iter; col: Sequence(DDD!Association) = Sequence{}| 
+	col.append(iter.association)
+	);
+
+-- Filters a sequence of classes to only contain Objects with the applied stereotype
+helper def: filterSequenceByStereotype(seq : Sequence(DDD!Class), stereotype : String) : Sequence(DDD!Class) =
+	seq -> iterate(iter; col: Sequence(DDD!Class) = Sequence{}|
+	if iter.hasStereotype(stereotype)
+	then
+		col.append(iter)
+	else
+		col.debug()
+	endif
+	);
+
+-- Filters a sequence of classes to only contain Objects with the applied stereotype
+helper def: filterSequenceByType(seq : Sequence(DDD!Class), type : String) : Sequence(DDD!Class) =
+	seq -> iterate(iter; col: Sequence(DDD!Class) = Sequence{}|
+	if iter.oclIsTypeOf(type)
+	then
+		col.append(iter)
+	else
+		col
+	endif
+	);
+
+-- Could also try input.IndexOf(string) to 
+helper def: stringContainsRegex(input : String, regex : String) : Boolean =
+	let result : String = input.debug().split(regex) in result.debug().size() > 1
+	;
+
+-- Check if association is empty before checking stereotypes
+helper context DDD!Association def: associationOriginHasStereotype(stereotype : String) : Boolean =
+	if(self.memberEnd -> notEmpty())
+		then
+			self.memberEnd.get(1).type.hasStereotype(stereotype)
+		else
+			false
+	endif;	
+
+-- Returns all objects that were created from all dependencies suppliers
+helper def: getDependenciesToOtherContexts(seq : Sequence(DDD!Class)) : Sequence(DDD!Class) =
+	--'whats up?'.println()/
+	thisModule.filterSequenceByType(seq, DDD!Dependency) ->
+	iterate(iter; col: Sequence(DDD!Class) = Sequence{}|
+			if (iter.supplier.get(0).namespace.name.debug() < iter.client.get(0).namespace.name.debug()) 
+				or (iter.supplier.get(0).namespace.name > iter.client.get(0).namespace.name)
+				then
+					col.append(iter.supplier)
+				else
+					col
+				endif	
+	);
+
+helper context DDD!Dependency def: getValidatedEntity() : DDD!Class =
+	if self.supplier.get(0).hasStereotype('Entity')
+		then
+			self.supplier.get(0)
+		else
+			DDD!Class
+	endif;		
+
+rule BoundedContext2MicroServiceAndDataModelWithoutAggregate {
+	from
+		p : DDD!Package (p.oclIsTypeOf(DDD!Package) and p.hasStereotype('BoundedContext') and thisModule.filterSequenceByStereotype(p.packagedElement, 'AggregateRoot').size() = 0)
+	to
+		
+		fs: AJI!FunctionalServiceT (
+			name <- p.name + 'Service',
+			domain <- dm,
+			providedInterfaces <- thisModule.filterSequenceByStereotype(p.packagedElement, 'Repository'),
+			providedInterfaces <- thisModule.filterSequenceByStereotype(p.packagedElement, 'Service'),
+			serviceDependencies <- thisModule.getDependenciesToOtherContexts(p.packagedElement)
+		),
+		
+		dm:	AJI!DataModelT (
+			name <- p.name + 'Model',
+			entities <- thisModule.filterSequenceByStereotype(p.packagedElement, 'Entity'),
+			entities <- thisModule.filterSequenceByStereotype(p.packagedElement, 'ValueObject')
+		)
+}
+
+rule BoundedContext2MicroServiceAndDataModelWithAggregate {
+	from
+		p : DDD!Package (p.oclIsTypeOf(DDD!Package) and p.hasStereotype('BoundedContext') and thisModule.filterSequenceByStereotype(p.packagedElement, 'AggregateRoot').size() > 0)
+	to
+		
+		fs: AJI!FunctionalServiceT (
+			name <- p.name + 'Service',
+			domain <- dm,
+			providedInterfaces <- thisModule.filterSequenceByStereotype(p.packagedElement, 'Repository'),
+			providedInterfaces <- thisModule.filterSequenceByStereotype(p.packagedElement, 'Service'),
+			serviceDependencies <- thisModule.getDependenciesToOtherContexts(p.packagedElement)
+		),
+		
+		aggRoot: AJI!EntityT(
+			name <- 'AbstractAggregateRoot'
+			),
+			
+		aggPart: AJI!EntityT(
+			name <- 'AbstractAggregatePart'
+			),
+		
+		dm:	AJI!DataModelT (
+			name <- p.name + 'Model',
+			entities <- thisModule.filterSequenceByStereotype(p.packagedElement, 'Entity'),
+			entities <- thisModule.filterSequenceByStereotype(p.packagedElement, 'ValueObject'),
+			entities <- aggRoot,
+			entities <- aggPart
+		)
+}
+
+rule Model2System {
+	
+	from
+		up : DDD!Model(up.name = 'DDDtest')	
+	to		
+		t: AJI!SystemT (
+			name <- up.name,
+			services <- up.nestedPackage
+		)
+	
+	do{
+		--thisModule.println('Blablabla');
+		
+	}
+}
+
+rule Entity2Entity_AggregateRoot{
+	from
+		old : DDD!Class (old.hasStereotype('Entity') and old.hasStereotype('AggregateRoot'))
+		
+	to
+		new : AJI!EntityT(
+				name <- old.name,
+				attributes <- old.attribute,
+				relations <- old.getAllAssocationsFromProperties(),
+				parent <- thisModule.resolveTemp(old.namespace, 'aggRoot')
+			)
+}
+
+
+rule Entity2Entity_NoAggregate{
+	from
+		old : DDD!Class (old.hasStereotype('Entity') and not old.hasStereotype('AggregateRoot') and not old.hasStereotype('AggregatePart'))
+		
+	to
+		new : AJI!EntityT(
+				name <- old.name,
+				attributes <- old.attribute,
+				relations <- old.getAllAssocationsFromProperties()
+			)
+}
+
+rule Entity2Entity_AggregatePart{
+	from
+		old : DDD!Class (old.hasStereotype('Entity') and old.hasStereotype('AggregatePart'))
+		
+	to
+		new : AJI!EntityT(
+				name <- old.name,
+				relations <- rel,
+				relations <- old.getAllAssocationsFromProperties(),
+				attributes <- old.attribute,
+				parent <- thisModule.resolveTemp(old.namespace, 'aggPart')
+			),
+			
+			rel : AJI!RelationT(
+				name <- 'AggregateRoot',
+				target <- old.getAggregateRoot()
+			)
+}
+
+rule ValueObject2Entity{
+	from
+		old : DDD!Class (old.hasStereotype('ValueObject') and old.namespace.hasStereotype('BoundedContext'))
+		
+	to
+		new : AJI!EntityT(
+				name <- old.name,
+				attributes <- old.attribute
+			)
+}
+
+rule AbstractionToEntity{
+	from 
+		old : DDD!Abstraction
+	to
+		new : AJI!EntityT(
+				name <- old.client.get(0).name,
+				attributes <- old.client.get(0).attribute,
+				--For this to work I had to make dataModel changeable (ask Jonas)
+				domainModel <- thisModule.resolveTemp(old.supplier.get(0).debug().namespace, 'dm'),
+				parent <- old.supplier.get(0)
+			)
+}
+
+rule PropertyToAttribute_Integer{
+	from
+		old : DDD!Property (old.isPrimitiveType('Integer')) 
+	to	
+			new : AJI!IntegerT(
+				name <- old.name
+			)
+}
+
+rule PropertyToAttribute_String{
+	from
+		old : DDD!Property (old.isPrimitiveType('String')) 
+	to	
+			new : AJI!StringT(
+				name <- old.name
+			)
+}
+
+rule PropertyToAttribute_Float{
+	from
+		old : DDD!Property (old.isPrimitiveType('Float')) 
+	to	
+			new : AJI!FloatT(
+				name <- old.name
+			)
+}
+
+rule PropertyToAttribute_Boolean{
+	from
+		old : DDD!Property (old.isPrimitiveType('Boolean')) 
+	to	
+			new : AJI!BooleanT(
+				name <- old.name
+			)
+}
+
+rule PropertyToAttribute_Undefined{
+	from
+		old : DDD!Property (old.type.oclIsUndefined()  and not(old.name = 'AggregateRoot'))
+		
+	to	
+			new : AJI!StringT(
+				name <- old.name
+			)
+}
+
+rule PropertyToAttribute_Association{
+	from
+		old : DDD!Property (not old.association.oclIsUndefined() and (old.namespace.hasStereotype('Entity') or old.namespace.hasStereotype('ValueObject'))) --and not old.isPropertyOfAssociation())
+		
+	to	
+			-- TODO: when AJI allows entities to have other entities as attributes, use these instead of String
+			new : AJI!StringT(
+				name <- old.name + ':' + old.name
+			)
+			
+			--as : AJI!RelationT(
+				--name <- old.name + 'Relation'
+			--)
+}
+
+-- TODO: Should I filter here, or somehow just delete Interfaces that are not part of a dependency?
+rule RepositoryOrServiceToServiceInterface{
+	from
+		old : DDD!Class (old.hasStereotype('Repository') or old.hasStereotype('Service'))
+	to
+		new : AJI!ServiceInterfaceT(
+				name <- old.name + 'Interface',
+				abilities <- old.ownedOperation
+			)
+}
+
+--Checking the type with the first characters, because a regex search can be ambigoous with createReader or something
+rule OperationToCreateAbility{
+	from
+		old: DDD!Operation ((old.namespace.hasStereotype('Repository') or old.namespace.hasStereotype('Service')) and
+			old.name.substring(1,6) = 'create')
+	to
+		new : AJI!CreateT( 
+				name <- old.name,
+				--No way to distinguish between multiple associations on a repo or service
+				subject <- old.namespace.getAllAssocationsFromProperties().first().memberEnd.first().type
+			)
+}
+
+rule OperationToReadAbility{
+	from
+		old: DDD!Operation (old.namespace.hasStereotype('Repository') or (old.namespace.hasStereotype('Service') and
+			(old.name.substring(1,4) = 'find' or old.name.substring(1,4) = 'read' or old.name.substring(1,3) = 'get')))
+	to
+		new : AJI!ReadT( 
+				name <- old.name,
+				--No way to distinguish between multiple associations on a repo or service
+				subject <- old.namespace.getAllAssocationsFromProperties().first().memberEnd.first().type
+			)
+}
+
+rule OperationToUpdateAbility{
+	from
+		old: DDD!Operation (old.namespace.hasStereotype('Service') and
+			old.name.substring(1,6) = 'update')
+	to
+		new : AJI!UpdateT( 
+				name <- old.name,
+				--No way to distinguish between multiple associations on a repo or service
+				subject <- old.namespace.getAllAssocationsFromProperties().first().memberEnd.first().type
+			)
+}
+
+rule OperationToDeleteAbility{
+	from
+		old: DDD!Operation (old.namespace.hasStereotype('Service') and
+			(old.name.substring(1,6) = 'delete' or old.name.substring(1,6) = 'remove'))
+	to
+		new : AJI!DeleteT( 
+				name <- old.name,
+				--No way to distinguish between multiple associations on a repo or service
+				subject <- old.namespace.getAllAssocationsFromProperties().first().memberEnd.first().type
+			)
+}
+
+--TODO: Right now not custom, but read, because custom does not have subject
+rule OperationToCustomAbility{
+	from
+		old: DDD!Operation (old.namespace.hasStereotype('Service') and not
+			(old.name.substring(1,6) = 'create' or
+				old.name.substring(1,4) = 'find' or old.name.substring(1,4) = 'read' or old.name.substring(1,3) = 'get' or
+				old.name.substring(1,6) = 'update'or
+				old.name.substring(1,6) = 'delete' or old.name.substring(1,6) = 'remove')				
+		)
+	to
+		new : AJI!ReadT( 
+				name <- old.name + '(Custom)',
+				--No way to distinguish between multiple associations on a repo or service
+				subject <- old.namespace.getAllAssocationsFromProperties().first().memberEnd.first().type
+			)
+}
+
+
+rule EntityAssociations{
+	from
+		old : DDD!Association (old.associationOriginHasStereotype('Entity'))
+		
+	to	
+			new : AJI!RelationT(
+				target <- old.memberEnd.first().type
+			)
+}
+
+rule SpecDependencyOfEntityToEntity{
+	from
+		old : DDD!Dependency (old.client.get(0).hasStereotype('Spec') and (old.supplier.get(0).hasStereotype('Entity') or old.supplier.get(0).hasStereotype('ValueObject')))
+		
+	to	
+			rel : AJI!RelationT(
+				name <- 'validates',
+				target <- old.supplier.get(0)
+			),
+			
+			new : AJI!EntityT(
+				name <- old.client.get(0).name+'_Spec',
+				attributes <- old.client.get(0).ownedOperation,
+				domainModel <- thisModule.resolveTemp(old.client.get(0).namespace, 'dm'),
+				relations <- rel
+			)
+}
+
+-- TODO: Might be changed, depending on how specifications are connected to the validated object
+rule SpecDependencyToEntity{
+	from
+		old : DDD!Dependency (old.client.get(0).hasStereotype('Spec') and not (old.supplier.get(0).hasStereotype('Entity') or old.supplier.get(0).hasStereotype('ValueObject')))
+		
+	to				
+			validates : AJI!BooleanT(
+				name <- 'validates' + old.supplier.get(0).name
+			),
+			
+			new : AJI!EntityT(
+				name <- old.client.get(0).name + '_Spec',
+				attributes <- old.client.get(0).ownedOperation,
+				domainModel <- thisModule.resolveTemp(old.client.get(0).namespace, 'dm'),
+				attributes <- validates
+			)
+}
+
+-- TODO: Has to be changed to Operation on the entity, but for now this is not possible in AJI
+rule SpecOperationToAttribute{
+	from
+		old : DDD!Operation(old.namespace.hasStereotype('Spec'))
+	to
+		new : AJI!StringT(
+			name <- old.name + '(Operation)'
+		)
+}
+
+
+
+
+rule log(log : String){
+	to 
+			si: AJI!System(
+			name <- log
+			)
+	do {
+		
+	}
+}
+
+
