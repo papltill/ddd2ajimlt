@@ -59,7 +59,7 @@ helper def: filterSequenceByType(seq : Sequence(DDD!Class), type : String) : Seq
 	);
 
 helper context DDD!Package def: packagedAbstractClasses() : Sequence(DDD!Class) =
-	thisModule.filterSequenceByType(self.packagedElement,DDD!Class) -> iterate(iter; col: Sequence(DDD!Class) = Sequence{}|
+	self.getPackagedElementsByType(DDD!Class) -> iterate(iter; col: Sequence(DDD!Class) = Sequence{}|
 	if iter.isAbstract
 	then
 		col.append(iter)
@@ -94,7 +94,7 @@ helper context DDD!Association def: associationOriginHasStereotype(stereotype : 
 helper def: getDependenciesToOtherContexts(seq : Sequence(DDD!Class)) : Sequence(DDD!Class) =
 	thisModule.filterSequenceByType(seq, DDD!Dependency) ->
 	iterate(iter; col: Sequence(DDD!Class) = Sequence{}|
-			if not (iter.supplier.get(0).namespace.name = iter.client.get(0).namespace.name)
+			if not (iter.supplier.get(0).goUpToElementWithStereotype('BoundedContext').name = iter.client.get(0).goUpToElementWithStereotype('BoundedContext').name)
 				then
 					col.append(iter.supplier)
 				else
@@ -102,6 +102,7 @@ helper def: getDependenciesToOtherContexts(seq : Sequence(DDD!Class)) : Sequence
 				endif	
 	);
 
+-- TODO: Delete this
 helper context DDD!Dependency def: getValidatedEntity() : DDD!Class =
 	if self.supplier.get(0).hasStereotype('Entity')
 		then
@@ -110,6 +111,7 @@ helper context DDD!Dependency def: getValidatedEntity() : DDD!Class =
 			DDD!Class
 	endif;	
 
+--Count Dependencies on a Class Element, to find out if a service/repo is referenced from outside of the own BC
 helper context DDD!Class def: countDependenciesOnThis() : Boolean =
 	thisModule.filterSequenceByType(self.goUpToElementWithType(DDD!Model).packagedElement,DDD!Package) -> 
 	iterate(iter; col: Sequence(DDD!Class) = Sequence{}|
@@ -123,7 +125,8 @@ helper context DDD!Class def: countDependenciesOnThis() : Boolean =
 helper context DDD!Package def: countDependenciesWithSupplier(object : DDD!Class) : Boolean =
 	thisModule.filterSequenceByType(self.packagedElement, DDD!Dependency) ->
 	iterate(iter; col: Sequence(DDD!Dependency) = Sequence{}|
-		if(iter.supplier.get(0).name = object.name and not (iter.supplier.get(0).namespace.name = iter.client.get(0).namespace.name)) --additionaly filter only dependencies with different bounded contexts
+		if(iter.supplier.get(0).name = object.name and 
+			not (iter.supplier.get(0).goUpToElementWithStereotype('BoundedContext').name = iter.client.get(0).goUpToElementWithStereotype('BoundedContext').name)) --additionaly filter only dependencies with different bounded contexts
 			then
 				col.append(iter)
 		else
@@ -141,29 +144,71 @@ helper context DDD!Model def: collectAbstractionsWithClient(object : DDD!Class) 
 		endif);
 
 helper context DDD!Element def: goUpToElementWithStereotype (stereotype : String) : DDD!Element =
-	if(self.namespace.hasStereotype(stereotype) or self.namespace.oclIsUndefined())
+	if(not self.namespace.oclIsUndefined())
 		then
-			self.namespace
+			if(self.namespace.hasStereotype(stereotype))
+				then
+					self.namespace
+			else
+				self.namespace.goUpToElementWithStereotype(stereotype)
+			endif
 		else
-			self.namespace.goUpToElementWithStereotype(stereotype)
+			self
 		endif;
 
 helper context DDD!Element def: goUpToElementWithType (type : OclType) : DDD!Element =
-	if(self.namespace.oclIsTypeOf(type) or self.namespace.oclIsUndefined())
+		if(not self.namespace.oclIsUndefined())
 		then
-			self.namespace
+			if(self.namespace.oclIsTypeOf(type))
+				then
+					self.namespace
+			else
+				self.namespace.goUpToElementWithType(type)
+			endif
 		else
-			self.namespace.goUpToElementWithType(type)
+			self
 		endif;
 
--- If 
+-- Goes recursively through all packages and collects the elements with specified type
+helper context DDD!Element def: getPackagedElementsByType(type : String) : Sequence(DDD!Class) =
+		self.packagedElement ->
+			iterate(iter; col: Sequence(DDD!Element) = Sequence{}|
+		if(iter.oclIsTypeOf(type))
+			then
+				col.append(iter)
+		else
+			if(iter.oclIsTypeOf(DDD!Package))
+				then
+				col.union(iter.getPackagedElementsByType(type))
+			else
+				col
+			endif
+		endif);
+
+-- Goes recursively through all packages and collects the elements with specified type
+helper context DDD!Element def: getPackagedElementsByStereoType(stereotype : String) : Sequence(DDD!Class) =
+		self.packagedElement ->
+			iterate(iter; col: Sequence(DDD!Element) = Sequence{}|
+		if(iter.hasStereotype(stereotype))
+			then
+				col.append(iter)
+		else
+			if(iter.oclIsTypeOf(DDD!Package))
+				then
+				col.union(iter.getPackagedElementsByStereoType(stereotype))
+			else
+				col
+			endif
+		endif);
+
+-- If no return type is given, take the subject from the owing elements associations, else 
 helper context DDD!Operation def: getCorrectSubject() : DDD!Element =
 	if(self.type.oclIsUndefined())
 		then 
 			-- return the end of the first association of the owning object
 			self.namespace.getAllAssocationsFromProperties().first().memberEnd.first().type
 		else
-			if(self.type.hasStereotype('ValueObject') and not self.namespace.hasStereotype('BoundedContext')) --SharedModel
+			if(self.type.hasStereotype('ValueObject') and self.type.goUpToElementWithStereotype('BoundedContext').oclIsTypeOf(DDD!Model)) --SharedModel
 				then 
 					self.type.goUpToElementWithType(DDD!Model).collectAbstractionsWithClient(self.type).first()
 				else
@@ -180,16 +225,16 @@ rule BoundedContext2MicroServiceAndDataModelWithoutAggregate {
 		fs: AJI!FunctionalServiceT (
 			name <- p.name + 'Service',
 			domain <- dm,
-			providedInterfaces <- thisModule.filterSequenceByStereotype(p.packagedElement, 'Repository'),
-			providedInterfaces <- thisModule.filterSequenceByStereotype(p.packagedElement, 'Service'),
+			providedInterfaces <- p.getPackagedElementsByStereoType('Repository'),
+			providedInterfaces <- p.getPackagedElementsByStereoType('Service'),
 			serviceDependencies <- thisModule.getDependenciesToOtherContexts(p.packagedElement)
 		),
 		
 		dm:	AJI!DataModelT (
 			name <- p.name + 'Model',
-			entities <- thisModule.filterSequenceByStereotype(p.packagedElement, 'Entity'),
-			entities <- thisModule.filterSequenceByStereotype(p.packagedElement, 'ValueObject'),
-			entities <- thisModule.filterSequenceByType(p.packagedElement, DDD!Enumeration),
+			entities <- p.getPackagedElementsByStereoType('Entity'),
+			entities <- p.getPackagedElementsByStereoType('ValueObject'),
+			entities <- p.getPackagedElementsByType(DDD!Enumeration),
 			entities <- p.packagedAbstractClasses()
 		)
 }
@@ -202,11 +247,9 @@ rule BoundedContext2MicroServiceAndDataModelWithAggregate {
 		fs: AJI!FunctionalServiceT (
 			name <- p.name + 'Service',
 			domain <- dm,
-			providedInterfaces <- thisModule.filterSequenceByStereotype(p.packagedElement, 'Repository'),
-			providedInterfaces <- thisModule.filterSequenceByStereotype(p.packagedElement, 'Service'),
-			serviceDependencies <- thisModule.getDependenciesToOtherContexts(p.packagedElement),
-			entities <- thisModule.filterSequenceByType(p.packagedElement, DDD!Enumeration),
-			entities <- p.packagedAbstractClasses()
+			providedInterfaces <- p.getPackagedElementsByStereoType('Repository'),
+			providedInterfaces <- p.getPackagedElementsByStereoType('Service'),
+			serviceDependencies <- thisModule.getDependenciesToOtherContexts(p.packagedElement)
 		),
 		
 		aggRoot: AJI!EntityT(
@@ -219,8 +262,10 @@ rule BoundedContext2MicroServiceAndDataModelWithAggregate {
 		
 		dm:	AJI!DataModelT (
 			name <- p.name + 'Model',
-			entities <- thisModule.filterSequenceByStereotype(p.packagedElement, 'Entity'),
-			entities <- thisModule.filterSequenceByStereotype(p.packagedElement, 'ValueObject'),
+			entities <- p.getPackagedElementsByStereoType('Entity'),
+			entities <- p.getPackagedElementsByStereoType('ValueObject'),
+			entities <- p.getPackagedElementsByType(DDD!Enumeration),
+			entities <- p.packagedAbstractClasses(),
 			entities <- aggRoot,
 			entities <- aggPart
 		)
@@ -274,7 +319,7 @@ rule Entity2Entity_AggregateRoot{
 				name <- old.name,
 				attributes <- old.attribute,
 				relations <- old.getAllAssocationsFromProperties(),
-				parent <- thisModule.resolveTemp(old.namespace, 'aggRoot'),
+				parent <- thisModule.resolveTemp(old.goUpToElementWithStereotype('BoundedContext'), 'aggRoot'),
 				parent <- old.getGenerelization()
 			)
 }
@@ -303,7 +348,7 @@ rule Entity2Entity_AggregatePart{
 				relations <- rel,
 				relations <- old.getAllAssocationsFromProperties(),
 				attributes <- old.attribute,
-				parent <- thisModule.resolveTemp(old.namespace, 'aggPart'),
+				parent <- thisModule.resolveTemp(old.goUpToElementWithStereotype('BoundedContext'), 'aggPart'),
 				parent <- old.getGenerelization()
 			),
 			
@@ -315,7 +360,7 @@ rule Entity2Entity_AggregatePart{
 
 rule ValueObject2Entity{
 	from
-		old : DDD!Class (old.hasStereotype('ValueObject') and old.namespace.hasStereotype('BoundedContext'))
+		old : DDD!Class (old.hasStereotype('ValueObject') and not old.goUpToElementWithStereotype('BoundedContext').oclIsTypeOf(DDD!Model))
 		
 	to
 		new : AJI!EntityT(
@@ -332,7 +377,7 @@ rule AbstractionToEntity{
 				name <- old.client.get(0).name,
 				attributes <- old.client.get(0).attribute,
 				--For this to work I had to make dataModel changeable (ask Jonas)
-				domainModel <- thisModule.resolveTemp(old.supplier.get(0).namespace, 'dm'),
+				domainModel <- thisModule.resolveTemp(old.supplier.get(0).goUpToElementWithStereotype('BoundedContext'), 'dm'),
 				parent <- old.supplier.get(0)
 			)
 }
