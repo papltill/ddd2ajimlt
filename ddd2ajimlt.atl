@@ -58,6 +58,24 @@ helper def: filterSequenceByType(seq : Sequence(DDD!Class), type : String) : Seq
 	endif
 	);
 
+helper context DDD!Package def: packagedAbstractClasses() : Sequence(DDD!Class) =
+	thisModule.filterSequenceByType(self.packagedElement,DDD!Class) -> iterate(iter; col: Sequence(DDD!Class) = Sequence{}|
+	if iter.isAbstract
+	then
+		col.append(iter)
+	else
+		col
+	endif
+	);
+
+helper context DDD!Class def: getGenerelization() : DDD!Class =
+	if self.generalization.size() = 0
+	then
+		DDD!Class
+	else
+		self.generalization.first().general
+	endif;
+
 -- Could also try input.IndexOf(string) to 
 helper def: stringContainsRegex(input : String, regex : String) : Boolean =
 	let result : String = input.split(regex) in result.size() > 1
@@ -113,9 +131,9 @@ helper context DDD!Package def: countDependenciesWithSupplier(object : DDD!Class
 		endif);
 	
 helper context DDD!Model def: collectAbstractionsWithClient(object : DDD!Class) : Boolean =
-	thisModule.filterSequenceByType(self.packagedElement.debug(), DDD!Abstraction).debug() ->
+	thisModule.filterSequenceByType(self.packagedElement, DDD!Abstraction) ->
 	iterate(iter; col: Sequence(DDD!Dependency) = Sequence{}|
-		if(iter.client.get(0).name.debug() = object.name.debug())
+		if(iter.client.get(0).name = object.name)
 			then
 				col.append(iter)
 		else
@@ -138,16 +156,18 @@ helper context DDD!Element def: goUpToElementWithType (type : OclType) : DDD!Ele
 			self.namespace.goUpToElementWithType(type)
 		endif;
 
+-- If 
 helper context DDD!Operation def: getCorrectSubject() : DDD!Element =
 	if(self.type.oclIsUndefined())
-		then
+		then 
+			-- return the end of the first association of the owning object
 			self.namespace.getAllAssocationsFromProperties().first().memberEnd.first().type
 		else
-			if(self.debug().type.hasStereotype('ValueObject') and not self.namespace.hasStereotype('BoundedContext')) --SharedModel
+			if(self.type.hasStereotype('ValueObject') and not self.namespace.hasStereotype('BoundedContext')) --SharedModel
 				then 
-					self.type.goUpToElementWithType(DDD!Model).debug().collectAbstractionsWithClient(self.type).debug().first().debug()
+					self.type.goUpToElementWithType(DDD!Model).collectAbstractionsWithClient(self.type).first()
 				else
-					self.type.debug()
+					self.type
 					endif
 	endif;		
 	
@@ -168,7 +188,9 @@ rule BoundedContext2MicroServiceAndDataModelWithoutAggregate {
 		dm:	AJI!DataModelT (
 			name <- p.name + 'Model',
 			entities <- thisModule.filterSequenceByStereotype(p.packagedElement, 'Entity'),
-			entities <- thisModule.filterSequenceByStereotype(p.packagedElement, 'ValueObject')
+			entities <- thisModule.filterSequenceByStereotype(p.packagedElement, 'ValueObject'),
+			entities <- thisModule.filterSequenceByType(p.packagedElement, DDD!Enumeration),
+			entities <- p.packagedAbstractClasses()
 		)
 }
 
@@ -182,7 +204,9 @@ rule BoundedContext2MicroServiceAndDataModelWithAggregate {
 			domain <- dm,
 			providedInterfaces <- thisModule.filterSequenceByStereotype(p.packagedElement, 'Repository'),
 			providedInterfaces <- thisModule.filterSequenceByStereotype(p.packagedElement, 'Service'),
-			serviceDependencies <- thisModule.getDependenciesToOtherContexts(p.packagedElement)
+			serviceDependencies <- thisModule.getDependenciesToOtherContexts(p.packagedElement),
+			entities <- thisModule.filterSequenceByType(p.packagedElement, DDD!Enumeration),
+			entities <- p.packagedAbstractClasses()
 		),
 		
 		aggRoot: AJI!EntityT(
@@ -218,6 +242,29 @@ rule Model2System {
 	}
 }
 
+rule AbstractClass2Entity{
+	from
+		old : DDD!Class (old.isAbstract)
+		
+	to
+		new : AJI!EntityT(
+				name <- old.name,
+				attributes <- old.attribute,
+				relations <- old.getAllAssocationsFromProperties()
+			)
+}
+
+rule Enum2Entity{
+	from
+		old : DDD!Enumeration
+		
+	to
+		new : AJI!EntityT(
+				name <- old.name,
+				attributes <- old.ownedLiteral
+			)
+}
+
 rule Entity2Entity_AggregateRoot{
 	from
 		old : DDD!Class (old.hasStereotype('Entity') and old.hasStereotype('AggregateRoot'))
@@ -227,7 +274,8 @@ rule Entity2Entity_AggregateRoot{
 				name <- old.name,
 				attributes <- old.attribute,
 				relations <- old.getAllAssocationsFromProperties(),
-				parent <- thisModule.resolveTemp(old.namespace, 'aggRoot')
+				parent <- thisModule.resolveTemp(old.namespace, 'aggRoot'),
+				parent <- old.getGenerelization()
 			)
 }
 
@@ -240,7 +288,8 @@ rule Entity2Entity_NoAggregate{
 		new : AJI!EntityT(
 				name <- old.name,
 				attributes <- old.attribute,
-				relations <- old.getAllAssocationsFromProperties()
+				relations <- old.getAllAssocationsFromProperties(),
+				parent <- old.getGenerelization()
 			)
 }
 
@@ -254,7 +303,8 @@ rule Entity2Entity_AggregatePart{
 				relations <- rel,
 				relations <- old.getAllAssocationsFromProperties(),
 				attributes <- old.attribute,
-				parent <- thisModule.resolveTemp(old.namespace, 'aggPart')
+				parent <- thisModule.resolveTemp(old.namespace, 'aggPart'),
+				parent <- old.getGenerelization()
 			),
 			
 			rel : AJI!RelationT(
@@ -327,6 +377,15 @@ rule PropertyToAttribute_Undefined{
 	from
 		old : DDD!Property (old.type.oclIsUndefined()  and not(old.name = 'AggregateRoot'))
 		
+	to	
+			new : AJI!StringT(
+				name <- old.name
+			)
+}
+
+rule EnumerationLiterateToAttribute{
+	from
+		old : DDD!EnumerationLiteral		
 	to	
 			new : AJI!StringT(
 				name <- old.name
