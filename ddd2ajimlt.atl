@@ -90,6 +90,32 @@ helper context DDD!Association def: associationOriginHasStereotype(stereotype : 
 			false
 	endif;	
 
+helper context DDD!Association def: isManyToManyAssociation() : Boolean =
+	if self.memberEnd.size() = 2
+		then
+			if self.memberEnd.first().upper = -1 and self.memberEnd.get(1).upper = -1
+			then
+				true
+			else
+				false
+			endif
+		else
+			false
+		endif;
+
+helper context DDD!Association def: isManyToOneAssociation() : Boolean =
+	if self.memberEnd.size() = 2
+		then
+			if self.memberEnd.first().upper = 1 and self.memberEnd.get(1).upper = -1
+			then
+				true
+			else
+				false
+			endif
+		else
+			false
+		endif;
+
 -- Returns all objects that were created from all dependencies suppliers
 helper def: getDependenciesToOtherContexts(seq : Sequence(DDD!Class)) : Sequence(DDD!Class) =
 	thisModule.filterSequenceByType(seq, DDD!Dependency) ->
@@ -274,7 +300,7 @@ rule BoundedContext2MicroServiceAndDataModelWithAggregate {
 rule Model2System {
 	
 	from
-		up : DDD!Model(up.name = 'DDDtest')	
+		up : DDD!Model
 	to		
 		t: AJI!SystemT (
 			name <- up.name,
@@ -472,7 +498,7 @@ rule RepositoryOrServiceWithOutsideDependenciesToServiceInterface{
 --Checking the type with the first characters, because a regex search can be ambigoous with createReader or something
 rule OperationToCreateAbility{
 	from
-		old: DDD!Operation ((old.namespace.hasStereotype('Repository') or old.namespace.hasStereotype('Service')) and
+		old: DDD!Operation (old.namespace.hasStereotype('Service') and
 			old.name.substring(1,6) = 'create' and old.namespace.countDependenciesOnThis().size() > 0)
 	to
 		new : AJI!CreateT( 
@@ -541,11 +567,32 @@ rule OperationToCustomAbility{
 
 rule EntityAssociations{
 	from
-		old : DDD!Association (old.associationOriginHasStereotype('Entity'))
+		old : DDD!Association (old.associationOriginHasStereotype('Entity') and not old.isManyToManyAssociation() 
+			and not old.isManyToOneAssociation())
 		
 	to	
 			new : AJI!RelationT(
-				target <- old.memberEnd.first().type
+				target <- old.memberEnd.first().type,
+				source <- old.memberEnd.get(1).type,
+				multiplicity <-  if (old.memberEnd.first().upper.debug() = -1) then 'MANY' else 'ONE' endif
+			)
+}
+
+rule splitManyToManyEntityAssociations{
+	from
+		old : DDD!Association (old.associationOriginHasStereotype('Entity') and old.isManyToManyAssociation())
+		
+	to	
+			new : AJI!RelationT(
+				target <- old.memberEnd.first().type,
+				source <- old.memberEnd.get(1).type,
+				multiplicity <- 'MANY'
+			),
+			
+			new2 : AJI!RelationT(
+				target <- old.memberEnd.get(1).type,
+				source <- old.memberEnd.first().type,
+				multiplicity <- 'MANY'
 			)
 }
 
