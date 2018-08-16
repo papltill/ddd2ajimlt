@@ -1,5 +1,4 @@
-
-
+-- @atlcompiler emftvm
 
 module ddd2ajimlt;
 create OUT : AJI from IN : DDD;
@@ -36,46 +35,36 @@ helper context DDD!Class def: getAllAssocationsFromProperties() : Sequence(DDD!A
 	col.append(iter.association)
 	);
 
--- Filters a sequence of classes to only contain Objects with the applied stereotype
-helper def: filterSequenceByStereotype(seq : Sequence(DDD!Class), stereotype : String) : Sequence(DDD!Class) =
-	seq -> iterate(iter; col: Sequence(DDD!Class) = Sequence{}|
-	if iter.hasStereotype(stereotype)
-	then
-		col.append(iter)
-	else
-		col
-	endif
-	);
-
--- Filters a sequence of classes to only contain Objects with the applied stereotype
-helper def: filterSequenceByType(seq : Sequence(DDD!Class), type : String) : Sequence(DDD!Class) =
-	seq -> iterate(iter; col: Sequence(DDD!Class) = Sequence{}|
-	if iter.oclIsTypeOf(type)
-	then
-		col.append(iter)
-	else
-		col
-	endif
-	);
-
-helper context DDD!Package def: packagedAbstractClasses() : Sequence(DDD!Class) =
-	self.getPackagedElementsByType(DDD!Class) -> iterate(iter; col: Sequence(DDD!Class) = Sequence{}|
-	if iter.isAbstract
-	then
-		col.append(iter)
-	else
-		col
-	endif
-	);
-
-helper context DDD!Class def: getGenerelization() : DDD!Class =
+helper context DDD!Class def: getGeneralization() : DDD!Class =
 	if self.generalization.size() = 0
-	then
-		DDD!Class
-	else
-		self.generalization.first().general
+		then
+			OclUndefined
+		else
+			self.generalization.first().general
 	endif;
 
+helper context DDD!Class def: generalizationHasStereotype(stereotype : String): Boolean =
+	if(self.getGeneralization().oclIsUndefined())
+		then
+			false
+		else
+			if(self.getGeneralization().hasStereotype(stereotype))
+				then
+					true
+				else
+					false
+				endif
+		endif;
+
+helper context DDD!Class def: generalizationBoundedContext() : DDD!Package =
+	if(self.generalizationHasStereotype('Entity'))
+		then
+			self.getGeneralization().goUpToElementWithStereotype('BoundedContext')
+		else
+			OclUndefined
+	endif;
+			
+			
 -- Could also try input.IndexOf(string) to 
 helper def: stringContainsRegex(input : String, regex : String) : Boolean =
 	let result : String = input.split(regex) in result.size() > 1
@@ -117,8 +106,8 @@ helper context DDD!Association def: isManyToOneAssociation() : Boolean =
 		endif;
 
 -- Returns all objects that were created from all dependencies suppliers
-helper def: getDependenciesToOtherContexts(seq : Sequence(DDD!Class)) : Sequence(DDD!Class) =
-	thisModule.filterSequenceByType(seq, DDD!Dependency) ->
+helper context DDD!Package def: getDependenciesToOtherContexts(seq : Sequence(DDD!Class)) : Sequence(DDD!Class) =
+	self.getPackagedElementsByType(DDD!Dependency) ->
 	iterate(iter; col: Sequence(DDD!Class) = Sequence{}|
 			if not (iter.supplier.get(0).goUpToElementWithStereotype('BoundedContext').name = iter.client.get(0).goUpToElementWithStereotype('BoundedContext').name)
 				then
@@ -128,40 +117,44 @@ helper def: getDependenciesToOtherContexts(seq : Sequence(DDD!Class)) : Sequence
 				endif	
 	);
 
--- TODO: Delete this
-helper context DDD!Dependency def: getValidatedEntity() : DDD!Class =
-	if self.supplier.get(0).hasStereotype('Entity')
-		then
-			self.supplier.get(0)
-		else
-			DDD!Class
-	endif;	
-
 --Count Dependencies on a Class Element, to find out if a service/repo is referenced from outside of the own BC
 helper context DDD!Class def: countDependenciesOnThis() : Boolean =
-	thisModule.filterSequenceByType(self.goUpToElementWithType(DDD!Model).packagedElement,DDD!Package) -> 
+	self.goUpToElementWithType(DDD!Model).getPackagedElementsByType(DDD!Dependency) -> 
 	iterate(iter; col: Sequence(DDD!Class) = Sequence{}|
-		if(iter.countDependenciesWithSupplier(self).size() > 0)
+		if(iter.supplier.get(0).name = self.name)
 			then
-				col.append(iter)
+				if(thisModule.sameBoundedContextNames(iter.supplier.get(0), iter.client.get(0)))
+					then
+						col.append(iter)
+					else
+						col
+					endif
+			else
+				col
+			endif);
+
+helper def: sameBoundedContextNames(el1 : DDD!Element, el2 : DDD!Element) : Boolean =
+	if(el1.goUpToElementWithStereotype('BoundedContext').name = el1.goUpToElementWithStereotype('BoundedContext').name)
+		then
+			true
 		else
-			col
-		endif);
+			false
+	endif;
 	
-helper context DDD!Package def: countDependenciesWithSupplier(object : DDD!Class) : Boolean =
-	thisModule.filterSequenceByType(self.packagedElement, DDD!Dependency) ->
-	iterate(iter; col: Sequence(DDD!Dependency) = Sequence{}|
-		if(iter.supplier.get(0).name = object.name and 
-			not (iter.supplier.get(0).goUpToElementWithStereotype('BoundedContext').name = iter.client.get(0).goUpToElementWithStereotype('BoundedContext').name)) --additionaly filter only dependencies with different bounded contexts
-			then
-				col.append(iter)
-		else
-			col
-		endif);
+--helper context DDD!Package def: countDependenciesWithSupplier(object : DDD!Class) : Boolean =
+--	thisModule.filterSequenceByType(self.packagedElement, DDD!Dependency) ->
+--	iterate(iter; col: Sequence(DDD!Dependency) = Sequence{}|
+--		if(iter.supplier.get(0).name = object.name and 
+--			not (iter.supplier.get(0).goUpToElementWithStereotype('BoundedContext').name = iter.client.get(0).goUpToElementWithStereotype('BoundedContext').name)) --additionaly filter only dependencies with different bounded contexts
+--			then
+--				col.append(iter)
+--		else
+--			col
+--		endif);
 	
 helper context DDD!Model def: collectAbstractionsWithClient(object : DDD!Class) : Boolean =
-	thisModule.filterSequenceByType(self.packagedElement, DDD!Abstraction) ->
-	iterate(iter; col: Sequence(DDD!Dependency) = Sequence{}|
+	self.getPackagedElementsByType(DDD!Abstraction) ->
+	iterate(iter; col: Sequence(DDD!Abstraction) = Sequence{}|
 		if(iter.client.get(0).name = object.name)
 			then
 				col.append(iter)
@@ -170,8 +163,8 @@ helper context DDD!Model def: collectAbstractionsWithClient(object : DDD!Class) 
 		endif);
 
 helper context DDD!Package def: collectAbstractionsWithClientBC(object : DDD!Class) : Boolean =
-	thisModule.filterSequenceByType(self.packagedElement, DDD!Abstraction) ->
-	iterate(iter; col: Sequence(DDD!Dependency) = Sequence{}|
+	self.getPackagedElementsByType(DDD!Abstraction) ->
+	iterate(iter; col: Sequence(DDD!Abstraction) = Sequence{}|
 		if(iter.client.get(0).name = object.name)
 			then
 				col.append(iter)
@@ -256,15 +249,10 @@ helper context DDD!Operation def: getCorrectSubject() : DDD!Element =
 				then
 					self.namespace.getAllAssocationsFromProperties().first().memberEnd.first().type
 				else
-					thisModule.resolveTemp(self.namespace.goUpToElementWithType(DDD!Model).collectAssociationsWithMemberEnd(self.namespace).first().memberEnd.get(0).type,'new')
+					self.namespace.goUpToElementWithType(DDD!Model).collectAssociationsWithMemberEnd(self.namespace).first().memberEnd.get(0).type
 			endif
 		else
-			if(self.type.hasStereotype('ValueObject') and self.type.goUpToElementWithStereotype('BoundedContext').oclIsTypeOf(DDD!Model)) --SharedModel
-				then 
-					self.type.goUpToElementWithType(DDD!Model).collectAbstractionsWithClient(self.type).first()
-				else
-					self.type
-					endif
+			self.type
 	endif;		
 
 helper context DDD!Class def: suitableForInterface() : Boolean =
@@ -275,12 +263,13 @@ helper context DDD!Class def: suitableForInterface() : Boolean =
 					true
 				else
 					-- =0 is to just have a false expression
-					('Repository" or "Service" object with name "'+self.name+'" was not converted because there is no corresponding concept in AJIL').debug() = 0
+					('[INFO] "Repository" or "Service" object with name "'+self.name+'" was not converted because there is no corresponding concept in AJIL').debug() = 0
 				endif
 		else 
 			false
 		endif;
 
+--TODO: Delete this
 helper def: getAbstractFromElement(element : DDD!Element) : DDD!Element =
 	if(not element.goUpToElementWithStereotype('BoundedContext').oclIsUndefined())
 		then
@@ -308,7 +297,7 @@ helper context DDD!Association def: bothEndsTransformed() : Boolean =
 
 rule BoundedContext2MicroServiceAndDataModelWithoutAggregate {
 	from
-		p : DDD!Package (p.oclIsTypeOf(DDD!Package) and p.hasStereotype('BoundedContext') and thisModule.filterSequenceByStereotype(p.packagedElement, 'AggregateRoot').size() = 0)
+		p : DDD!Package (p.oclIsTypeOf(DDD!Package) and p.hasStereotype('BoundedContext') and p.getPackagedElementsByStereoType('AggregateRoot').size() = 0)
 	to
 		
 		fs: AJI!FunctionalServiceT (
@@ -316,21 +305,20 @@ rule BoundedContext2MicroServiceAndDataModelWithoutAggregate {
 			domain <- dm,
 			providedInterfaces <- p.getPackagedElementsByStereoType('Repository'),
 			providedInterfaces <- p.getPackagedElementsByStereoType('Service'),
-			serviceDependencies <- thisModule.getDependenciesToOtherContexts(p.packagedElement)
+			serviceDependencies <- p.getDependenciesToOtherContexts()
 		),
 		
 		dm:	AJI!DataModelT (
 			name <- p.name + 'Model',
 			entities <- p.getPackagedElementsByStereoType('Entity'),
 			entities <- p.getPackagedElementsByStereoType('ValueObject'),
-			entities <- p.getPackagedElementsByType(DDD!Enumeration),
-			entities <- p.packagedAbstractClasses()
+			entities <- p.getPackagedElementsByType(DDD!Enumeration)
 		)
 }
 
 rule BoundedContext2MicroServiceAndDataModelWithAggregate {
 	from
-		p : DDD!Package (p.oclIsTypeOf(DDD!Package) and p.hasStereotype('BoundedContext') and thisModule.filterSequenceByStereotype(p.packagedElement, 'AggregateRoot').size() > 0)
+		p : DDD!Package (p.oclIsTypeOf(DDD!Package) and p.hasStereotype('BoundedContext') and p.getPackagedElementsByStereoType('AggregateRoot').size() > 0)
 	to
 		
 		fs: AJI!FunctionalServiceT (
@@ -338,7 +326,7 @@ rule BoundedContext2MicroServiceAndDataModelWithAggregate {
 			domain <- dm,
 			providedInterfaces <- p.getPackagedElementsByStereoType('Repository'),
 			providedInterfaces <- p.getPackagedElementsByStereoType('Service'),
-			serviceDependencies <- thisModule.getDependenciesToOtherContexts(p.packagedElement)
+			serviceDependencies <- p.getDependenciesToOtherContexts()
 		),
 		
 		aggRoot: AJI!EntityT(
@@ -354,7 +342,6 @@ rule BoundedContext2MicroServiceAndDataModelWithAggregate {
 			entities <- p.getPackagedElementsByStereoType('Entity'),
 			entities <- p.getPackagedElementsByStereoType('ValueObject'),
 			entities <- p.getPackagedElementsByType(DDD!Enumeration),
-			entities <- p.packagedAbstractClasses(),
 			entities <- aggRoot,
 			entities <- aggPart
 		)
@@ -367,7 +354,7 @@ rule Module2Log{
 	to	
 
 	do{
-		('"Module" object with name "'+old.name+ '" was not converted, because there is no corresponding concept in AJIL').println();
+		('[INFO] "Module" object with name "'+old.name+ '" was not converted, because there is no corresponding concept in AJIL').println();
 	}	
 }
 
@@ -380,25 +367,7 @@ rule Model2System {
 			name <- up.name,
 			services <- up.nestedPackage
 		)
-	
-	do{
-		--thisModule.println('Blablabla');
-		
-	}
 }
-
--- I dont think I need this
---rule AbstractClass2Entity{
---	from
---		old : DDD!Class (old.isAbstract)
-		
---	to
---		new : AJI!EntityT(
---				name <- old.name + 'hello',
---				attributes <- old.attribute,
---				relations <- old.getAllAssocationsFromProperties()
---			)
---}
 
 rule Enum2Entity{
 	from
@@ -413,7 +382,7 @@ rule Enum2Entity{
 
 rule Entity2Entity_AggregateRoot{
 	from
-		old : DDD!Class (old.hasStereotype('Entity') and old.hasStereotype('AggregateRoot'))
+		old : DDD!Class ((old.hasStereotype('Entity') or old.generalizationHasStereotype('Entity')) and old.hasStereotype('AggregateRoot'))
 		
 	to
 		new : AJI!EntityT(
@@ -421,28 +390,29 @@ rule Entity2Entity_AggregateRoot{
 				attributes <- old.attribute,
 				relations <- old.getAllAssocationsFromProperties(),
 				parent <- thisModule.resolveTemp(old.goUpToElementWithStereotype('BoundedContext'), 'aggRoot'),
-				parent <- old.getGenerelization()
+				parent <- old.getGeneralization(),
+				domainModel <- thisModule.resolveTemp(old.generalizationBoundedContext(), 'dm')
 			)
 }
 
 
 rule Entity2Entity_NoAggregate{
 	from
-		old : DDD!Class ((old.hasStereotype('Entity') or old.isAbstract = true) and not (old.hasStereotype('AggregateRoot') or old.hasStereotype('AggregatePart')) 
-			and thisModule.getAbstractFromElement(old).oclIsUndefined())  --This here because entities with abstractions are created in a seperate rule		
-		
+		old : DDD!Class ((old.hasStereotype('Entity') or old.generalizationHasStereotype('Entity')) 
+			and not (old.hasStereotype('AggregateRoot') or old.hasStereotype('AggregatePart')))
 	to
 		new : AJI!EntityT(
 				name <- old.name,
 				attributes <- old.attribute,
 				relations <- old.getAllAssocationsFromProperties(),
-				parent <- old.getGenerelization()
+				parent <- old.getGeneralization(),
+				domainModel <- thisModule.resolveTemp(old.generalizationBoundedContext(), 'dm')
 			)
 }
 
 rule Entity2Entity_AggregatePart{
 	from
-		old : DDD!Class (old.hasStereotype('Entity') and old.hasStereotype('AggregatePart'))
+		old : DDD!Class ((old.hasStereotype('Entity') or old.generalizationHasStereotype('Entity')) and old.hasStereotype('AggregatePart'))
 		
 	to
 		new : AJI!EntityT(
@@ -451,7 +421,8 @@ rule Entity2Entity_AggregatePart{
 				relations <- old.getAllAssocationsFromProperties(),
 				attributes <- old.attribute,
 				parent <- thisModule.resolveTemp(old.goUpToElementWithStereotype('BoundedContext'), 'aggPart'),
-				parent <- old.getGenerelization()
+				parent <- old.getGeneralization(),
+				domainModel <- thisModule.resolveTemp(old.generalizationBoundedContext(), 'dm')
 			),
 			
 			rel : AJI!RelationT(
@@ -471,21 +442,22 @@ rule ValueObject2Entity{
 			)
 }
 
--- TODO: Überprüfen, ob es sich um Abstractions von außerhalb des BCs handelt -> SharedModel
-rule AbstractionToEntity{
-	from 
-		old : DDD!Abstraction
+rule SharedModel2Entity{
+	from
+		old : DDD!Class (old.hasStereotype('ValueObject') and old.goUpToElementWithStereotype('BoundedContext').oclIsUndefined())
+	using{
+		abstraction : DDD!Abstraction = thisModule.getAbstractFromSharedModel(old).supplier.get(0);
+	}	
 	to
 		new : AJI!EntityT(
-				name <- old.client.get(0).name,
-				attributes <- old.client.get(0).attribute,
-				--For this to work I had to make dataModel changeable (ask Jonas)
-				domainModel <- thisModule.resolveTemp(old.supplier.get(0).goUpToElementWithStereotype('BoundedContext'), 'dm'),
-				parent <- old.supplier.get(0)
+				name <- old.name,
+				attributes <- old.attribute,
+				domainModel <- thisModule.resolveTemp(abstraction.goUpToElementWithStereotype('BoundedContext'), 'dm'),
+				parent <- abstraction
 			)
 }
 
-rule PropertyToAttribute_Integer{
+rule Property2Attribute_Integer{
 	from
 		old : DDD!Property (old.isPrimitiveType('Integer')) 
 	to	
@@ -494,7 +466,7 @@ rule PropertyToAttribute_Integer{
 			)
 }
 
-rule PropertyToAttribute_String{
+rule Property2Attribute_String{
 	from
 		old : DDD!Property (old.isPrimitiveType('String')) 
 	to	
@@ -503,7 +475,7 @@ rule PropertyToAttribute_String{
 			)
 }
 
-rule PropertyToAttribute_Float{
+rule Property2Attribute_Float{
 	from
 		old : DDD!Property (old.isPrimitiveType('Float')) 
 	to	
@@ -512,7 +484,7 @@ rule PropertyToAttribute_Float{
 			)
 }
 
-rule PropertyToAttribute_Boolean{
+rule Property2Attribute_Boolean{
 	from
 		old : DDD!Property (old.isPrimitiveType('Boolean')) 
 	to	
@@ -521,7 +493,7 @@ rule PropertyToAttribute_Boolean{
 			)
 }
 
-rule PropertyToAttribute_Undefined{
+rule Property2Attribute_Undefined{
 	from
 		old : DDD!Property (old.type.oclIsUndefined()  and not(old.name = 'AggregateRoot'))
 		
@@ -531,7 +503,7 @@ rule PropertyToAttribute_Undefined{
 			)
 }
 
-rule EnumerationLiterateToAttribute{
+rule EnumerationLiteral2Attribute{
 	from
 		old : DDD!EnumerationLiteral		
 	to	
@@ -540,18 +512,17 @@ rule EnumerationLiterateToAttribute{
 			)
 }
 
-rule PropertyToAttribute_Association{
+rule Property2Attribute_Association{
 	from
 		old : DDD!Property (not old.association.oclIsUndefined() and (old.namespace.hasStereotype('Entity') or old.namespace.hasStereotype('ValueObject'))) --and not old.isPropertyOfAssociation())
 		
 	to	
-			-- TODO: when AJI allows entities to have other entities as attributes, use these instead of String
 			new : AJI!EntityT(
 				name <- old.name
 			)
 }
 
-rule RepositoryOrServiceToServiceInterface{
+rule RepositoryOrService2ServiceInterface{
 	from
 		old : DDD!Class (old.suitableForInterface())
 	to
@@ -562,7 +533,7 @@ rule RepositoryOrServiceToServiceInterface{
 }
 
 --Checking the type with the first characters, because a regex search can be ambigoous with createReader or something
-rule OperationToCreateAbility{
+rule Operation2CreateAbility{
 	from
 		old: DDD!Operation ((old.namespace.hasStereotype('Repository') or old.namespace.hasStereotype('Service')) and
 			old.name.substring(1,6) = 'create' and old.namespace.countDependenciesOnThis().size() > 0)
@@ -574,7 +545,7 @@ rule OperationToCreateAbility{
 			)
 }
 
-rule OperationToReadAbility{
+rule Operation2ReadAbility{
 	from
 		old: DDD!Operation ((old.namespace.hasStereotype('Repository') or old.namespace.hasStereotype('Service')) and
 			(old.name.substring(1,4) = 'find' or old.name.substring(1,4) = 'read' or old.name.substring(1,3) = 'get')
@@ -587,7 +558,7 @@ rule OperationToReadAbility{
 			)
 }
 
-rule OperationToUpdateAbility{
+rule Operation2UpdateAbility{
 	from
 		old: DDD!Operation ((old.namespace.hasStereotype('Repository') or old.namespace.hasStereotype('Service')) and
 			old.name.substring(1,6) = 'update' and old.namespace.countDependenciesOnThis().size() > 0)
@@ -599,7 +570,7 @@ rule OperationToUpdateAbility{
 			)
 }
 
-rule OperationToDeleteAbility{
+rule Operation2DeleteAbility{
 	from
 		old: DDD!Operation ((old.namespace.hasStereotype('Repository') or old.namespace.hasStereotype('Service')) and
 			(old.name.substring(1,6) = 'delete' or old.name.substring(1,6) = 'remove')
@@ -612,8 +583,7 @@ rule OperationToDeleteAbility{
 			)
 }
 
---TODO: Right now not custom, but read, because custom does not have subject
-rule OperationToCustomAbility{
+rule Operation2CustomAbility{
 	from
 		old: DDD!Operation (old.namespace.hasStereotype('Service') and not
 			(old.name.substring(1,6) = 'create' or
@@ -640,8 +610,8 @@ rule EntityAssociations{
 			new : AJI!RelationT(
 				target <- old.memberEnd.first().type,
 				source <- old.memberEnd.get(1).type,
-				multiplicity <-  if (old.memberEnd.first().upper = -1) then 'MANY' else 'ONE' endif,
-				name <- old.memberEnd.get(1).name + '->' + old.memberEnd.first().name
+				multiplicity <-  if (old.memberEnd.first().upper = -1) then 'MANY' else 'ONE' endif
+				--name <- old.memberEnd.get(1).name + '->' + old.memberEnd.first().name
 			)
 }
 
@@ -649,50 +619,31 @@ rule splitManyToManyEntityAssociations{
 	from
 		old : DDD!Association (old.associationOriginHasStereotype('Entity') and old.isManyToManyAssociation())
 		-- Checken ob Assoziationen zwischen Bounded Contexts sind
-	using{
-			firstElement : DDD!Element = thisModule.getAbstractFromSharedModel(old.memberEnd.first().type);
-			secondElement: DDD!Element = thisModule.getAbstractFromSharedModel(old.memberEnd.get(1).type);
-	}
 	to	
 			new : AJI!RelationT(
 				target <- old.memberEnd.first().type,
-				-- This is added additionaly to each setting, because some entities are created by Converting there Abstractions rather than the Elements themselves
-				target <- firstElement,
 				source <- old.memberEnd.get(1).type,
-				source <- secondElement,
-				multiplicity <- 'MANY',
-				name <- '1: ' + old.memberEnd.get(1).name + '->' + old.memberEnd.first().name
+				multiplicity <- 'MANY'
+				--name <- '1: ' + old.memberEnd.get(1).name + '->' + old.memberEnd.first().name
 			),
 			
 			new2 : AJI!RelationT(
 				target <- old.memberEnd.get(1).type,
-				target <- secondElement,
 				source <- old.memberEnd.first().type,
-				source <- firstElement,
-				multiplicity <- 'MANY',
-				name <- '2: ' + old.memberEnd.first().name + '->' + old.memberEnd.get(1).name
+				multiplicity <- 'MANY'
+				--name <- '2: ' + old.memberEnd.first().name + '->' + old.memberEnd.get(1).name
 			)
 }
 
-rule SpecToLog{
+rule Spec2Log{
 	from
 		old : DDD!Class (old.hasStereotype('Spec'))
 		
 	to	
 
 	do{
-		('"Spec" object with name "'+old.name+ '" was not converted, because there is no corresponding concept in AJIL').println();
+		('[INFO] "Spec" object with name "'+old.name+ '" was not converted, because there is no corresponding concept in AJIL').println();
 	}	
-}
-
-rule log(log : String){
-	to 
-			si: AJI!System(
-			name <- log
-			)
-	do {
-		
-	}
 }
 
 
