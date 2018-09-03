@@ -1,4 +1,3 @@
--- @atlcompiler emftvm
 
 module ddd2ajimlt;
 create OUT : AJI from IN : DDD;
@@ -7,6 +6,8 @@ create OUT : AJI from IN : DDD;
 helper context DDD!Element def: hasStereotype(stereotype : String) : Boolean =
 	self.getAppliedStereotypes() -> exists(e|e.name=stereotype);
 
+helper context DDD!Element def: noStereotype() : Boolean =
+	self.getAppliedStereotypes().size() = 0;
 
 --Can be used if the type of a property is a primitive type from UML (String,Integer,Boolean etc.)
 helper context DDD!Property def: isPrimitiveType(type : String): Boolean =
@@ -30,19 +31,28 @@ helper context DDD!Element def: getAggregateRoot() : DDD!Element =
 		self
 	endif;
 
+-- Retreive all associations that are added to a class by properties
 helper context DDD!Class def: getAllAssocationsFromProperties() : Sequence(DDD!Assocation) =
 	self.attribute -> iterate(iter; col: Sequence(DDD!Association) = Sequence{}| 
 	col.append(iter.association)
 	);
 
-helper context DDD!Class def: getGeneralization() : DDD!Class =
+--Retreive the generalization of an Element
+helper context DDD!Element def: getGeneralization() : DDD!Class =
 	if self.generalization.size() = 0
 		then
 			OclUndefined
 		else
-			self.generalization.first().general
+			if(self.generalization.first().general.goUpToElementWithStereotype('BoundedContext').name 
+					= self.goUpToElementWithStereotype('BoundedContext').name)
+				then
+					self.generalization.first().general
+				else 
+					OclUndefined
+				endif
 	endif;
 
+-- Check if the generalization of a class has a specific stereotype
 helper context DDD!Class def: generalizationHasStereotype(stereotype : String): Boolean =
 	if(self.getGeneralization().oclIsUndefined())
 		then
@@ -56,6 +66,7 @@ helper context DDD!Class def: generalizationHasStereotype(stereotype : String): 
 				endif
 		endif;
 
+-- Retreive the Bounded Context of a classes generalization
 helper context DDD!Class def: generalizationBoundedContext() : DDD!Package =
 	if(self.generalizationHasStereotype('Entity'))
 		then
@@ -63,22 +74,17 @@ helper context DDD!Class def: generalizationBoundedContext() : DDD!Package =
 		else
 			OclUndefined
 	endif;
-			
-			
--- Could also try input.IndexOf(string) to 
-helper def: stringContainsRegex(input : String, regex : String) : Boolean =
-	let result : String = input.split(regex) in result.size() > 1
-	;
 
--- Check if association is empty before checking stereotypes
+-- Check if the owning end of a association has a specific stereotype
 helper context DDD!Association def: associationOriginHasStereotype(stereotype : String) : Boolean =
 	if(self.memberEnd -> notEmpty())
 		then
-			self.memberEnd.get(1).type.hasStereotype(stereotype)
+			self.memberEnd.get(1).type.processableAsStereotype(stereotype)
 		else
 			false
 	endif;	
 
+-- Check if an association is a ManyToManyAssociation
 helper context DDD!Association def: isManyToManyAssociation() : Boolean =
 	if self.memberEnd.size() = 2
 		then
@@ -92,12 +98,16 @@ helper context DDD!Association def: isManyToManyAssociation() : Boolean =
 			false
 		endif;
 
+-- Check if an association is a ManyToOneAssociation
 helper context DDD!Association def: isManyToOneAssociation() : Boolean =
 	if self.memberEnd.size() = 2
 		then
 			if self.memberEnd.first().upper = 1 and self.memberEnd.get(1).upper = -1
 			then
-				true
+				-- This is a workaround LOG, it debugs and then returns a value, because println throws errors
+				('[INFO][DROP] Association between "'+self.memberEnd.first().name+ 
+				 '" and "'+self.memberEnd.get(1).name+
+				 '" was not converted because there is no corresponding concept in AJIL').debug().expressionValue(true)
 			else
 				false
 			endif
@@ -107,7 +117,7 @@ helper context DDD!Association def: isManyToOneAssociation() : Boolean =
 
 -- Returns all objects that were created from all dependencies suppliers
 helper context DDD!Package def: getDependenciesToOtherContexts(seq : Sequence(DDD!Class)) : Sequence(DDD!Class) =
-	self.getPackagedElementsByType(DDD!Dependency) ->
+	self.getPackagedElementsByType(DDD!Dependency, true) ->
 	iterate(iter; col: Sequence(DDD!Class) = Sequence{}|
 			if not (iter.supplier.get(0).goUpToElementWithStereotype('BoundedContext').name = iter.client.get(0).goUpToElementWithStereotype('BoundedContext').name)
 				then
@@ -119,9 +129,9 @@ helper context DDD!Package def: getDependenciesToOtherContexts(seq : Sequence(DD
 
 --Count Dependencies on a Class Element, to find out if a service/repo is referenced from outside of the own BC
 helper context DDD!Class def: countDependenciesOnThis() : Boolean =
-	self.goUpToElementWithType(DDD!Model).getPackagedElementsByType(DDD!Dependency) -> 
+	self.goUpToElementWithType(DDD!Model).getPackagedElementsByType(DDD!Dependency, true) -> 
 	iterate(iter; col: Sequence(DDD!Class) = Sequence{}|
-		if(iter.supplier.get(0).name = self.name)
+		if((iter.oclIsTypeOf(DDD!Dependency) or iter.oclIsTypeOf(DDD!Usage)) and iter.supplier.get(0).name = self.name)
 			then
 				if(thisModule.sameBoundedContextNames(iter.supplier.get(0), iter.client.get(0)))
 					then
@@ -133,6 +143,7 @@ helper context DDD!Class def: countDependenciesOnThis() : Boolean =
 				col
 			endif);
 
+-- Check if two Elements have the same Bounded COntext names
 helper def: sameBoundedContextNames(el1 : DDD!Element, el2 : DDD!Element) : Boolean =
 	if(el1.goUpToElementWithStereotype('BoundedContext').name = el1.goUpToElementWithStereotype('BoundedContext').name)
 		then
@@ -141,19 +152,9 @@ helper def: sameBoundedContextNames(el1 : DDD!Element, el2 : DDD!Element) : Bool
 			false
 	endif;
 	
---helper context DDD!Package def: countDependenciesWithSupplier(object : DDD!Class) : Boolean =
---	thisModule.filterSequenceByType(self.packagedElement, DDD!Dependency) ->
---	iterate(iter; col: Sequence(DDD!Dependency) = Sequence{}|
---		if(iter.supplier.get(0).name = object.name and 
---			not (iter.supplier.get(0).goUpToElementWithStereotype('BoundedContext').name = iter.client.get(0).goUpToElementWithStereotype('BoundedContext').name)) --additionaly filter only dependencies with different bounded contexts
---			then
---				col.append(iter)
---		else
---			col
---		endif);
-	
+-- Starting from the model, search all abstractions in the whole model that have the element as a client
 helper context DDD!Model def: collectAbstractionsWithClient(object : DDD!Class) : Boolean =
-	self.getPackagedElementsByType(DDD!Abstraction) ->
+	self.getPackagedElementsByType(DDD!Abstraction, false) ->
 	iterate(iter; col: Sequence(DDD!Abstraction) = Sequence{}|
 		if(iter.client.get(0).name = object.name)
 			then
@@ -162,8 +163,9 @@ helper context DDD!Model def: collectAbstractionsWithClient(object : DDD!Class) 
 			col
 		endif);
 
+-- Starting from the Bounded Context, search all abstractions in the whole model that have the element as a client
 helper context DDD!Package def: collectAbstractionsWithClientBC(object : DDD!Class) : Boolean =
-	self.getPackagedElementsByType(DDD!Abstraction) ->
+	self.getPackagedElementsByType(DDD!Abstraction, false) ->
 	iterate(iter; col: Sequence(DDD!Abstraction) = Sequence{}|
 		if(iter.client.get(0).name = object.name)
 			then
@@ -172,8 +174,9 @@ helper context DDD!Package def: collectAbstractionsWithClientBC(object : DDD!Cla
 			col
 		endif);
 
+-- Get all associations that have the object as one end
 helper context DDD!Element def: collectAssociationsWithMemberEnd(object : DDD!Class) : Boolean =
-	self.getPackagedElementsByType(DDD!Association) ->
+	self.getPackagedElementsByType(DDD!Association, false) ->
 	iterate(iter; col: Sequence(DDD!Association) = Sequence{}|
 		if(iter.memberEnd.get(1).type.name = object.name)
 			then
@@ -182,6 +185,7 @@ helper context DDD!Element def: collectAssociationsWithMemberEnd(object : DDD!Cl
 			col
 		endif);
 
+-- Go up to the root using namespace until you hit a specified stereotype, otherwise return undefined
 helper context DDD!Element def: goUpToElementWithStereotype (stereotype : String) : DDD!Element =
 	if(self.hasStereotype(stereotype))
 		then
@@ -195,6 +199,7 @@ helper context DDD!Element def: goUpToElementWithStereotype (stereotype : String
 				endif
 		endif;
 
+-- Go up to the root using namespace until you hit a specified type, otherwise return undefined
 helper context DDD!Element def: goUpToElementWithType (type : OclType) : DDD!Element =
 	if(self.oclIsTypeOf(type))
 		then
@@ -209,16 +214,16 @@ helper context DDD!Element def: goUpToElementWithType (type : OclType) : DDD!Ele
 		endif;
 
 -- Goes recursively through all packages and collects the elements with specified type
-helper context DDD!Element def: getPackagedElementsByType(type : String) : Sequence(DDD!Class) =
+helper context DDD!Element def: getPackagedElementsByType(type : String, kind : Boolean) : Sequence(DDD!Class) =
 		self.packagedElement ->
 			iterate(iter; col: Sequence(DDD!Element) = Sequence{}|
-		if(iter.oclIsTypeOf(type))
+		if(iter.oclIsTypeOf(type) or (kind and iter.oclIsKindOf(type)))
 			then
 				col.append(iter)
 		else
 			if(iter.oclIsTypeOf(DDD!Package))
 				then
-				col.union(iter.getPackagedElementsByType(type))
+				col.union(iter.getPackagedElementsByType(type, kind))
 			else
 				col
 			endif
@@ -249,35 +254,34 @@ helper context DDD!Operation def: getCorrectSubject() : DDD!Element =
 				then
 					self.namespace.getAllAssocationsFromProperties().first().memberEnd.first().type
 				else
-					self.namespace.goUpToElementWithType(DDD!Model).collectAssociationsWithMemberEnd(self.namespace).first().memberEnd.get(0).type
+					self.namespace.goUpToElementWithType(DDD!Model).
+					collectAssociationsWithMemberEnd(self.namespace).first().memberEnd.get(0).type
 			endif
 		else
 			self.type
 	endif;		
 
+-- Checks if a repo or service has dependencies referencing it to check if it can be an interface
 helper context DDD!Class def: suitableForInterface() : Boolean =
-	if((self.hasStereotype('Repository') or self.hasStereotype('Service')))
+	if((self.processableAsStereotype('Repository') or self.processableAsStereotype('Service')))
 		then
 			if(self.countDependenciesOnThis().size() > 0)
 				then
 					true
 				else
-					-- =0 is to just have a false expression
-					('[INFO] "Repository" or "Service" object with name "'+self.name+'" was not converted because there is no corresponding concept in AJIL').debug() = 0
+					-- This is a workaround LOG, it debugs and then returns a value, because println throws errors
+					('[INFO][DROP] "Repository" or "Service" element with name "'+self.name+
+					 '" was not converted because there is no corresponding concept in AJIL').debug().expressionValue(false)
 				endif
 		else 
 			false
 		endif;
 
---TODO: Delete this
-helper def: getAbstractFromElement(element : DDD!Element) : DDD!Element =
-	if(not element.goUpToElementWithStereotype('BoundedContext').oclIsUndefined())
-		then
-			element.goUpToElementWithStereotype('BoundedContext').collectAbstractionsWithClientBC(element).first()
-		else
-			OclUndefined
-		endif;
+-- workaround method for workaround LOGs, asseses a given value
+helper context String def: expressionValue(value : Boolean) : Boolean =
+	value;
 
+-- Gets the element that is referenced by a abstract that has the element as a client
 helper def: getAbstractFromSharedModel(element : DDD!Element) : DDD!Element =
 	if(element.goUpToElementWithStereotype('BoundedContext').oclIsUndefined())
 		then
@@ -286,18 +290,69 @@ helper def: getAbstractFromSharedModel(element : DDD!Element) : DDD!Element =
 			OclUndefined
 		endif;
 
--- Helper to find out if both ends are transformed to other stuff, currently not working
-helper context DDD!Association def: bothEndsTransformed() : Boolean =
-	if(thisModule.resolveTemp(self.memberEnd.first().debug(),'new').debug().oclIsUndefined() or thisModule.resolveTemp(self.memberEnd.get(1).debug(), 'new').debug().oclIsUndefined())
+-- Checks if a stereotype is inherited to a class
+helper context DDD!Class def: processableAsStereotype(stereotype : String) : Boolean =
+	(self.hasStereotype(stereotype) or (self.noStereotype() and self.generalizationHasStereotype(stereotype)));
+
+-- checks if both ends of an association are in one context
+helper context DDD!Association def: inOneContext() : Boolean =
+	if(not self.memberEnd.first().type.goUpToElementWithStereotype('BoundedContext').oclIsUndefined() 
+			and not self.memberEnd.get(1).type.goUpToElementWithStereotype('BoundedContext').oclIsUndefined())
+		then
+			if(self.memberEnd.first().type.goUpToElementWithStereotype('BoundedContext').name 
+					= self.memberEnd.get(1).type.goUpToElementWithStereotype('BoundedContext').name)
+				then
+					true
+				else
+					false
+				endif
+		else
+			false
+	endif;
+
+-- checks if both ends of an association that is defined by a property are in one context
+helper context DDD!Property def: associationInOneBoundedContext() : Boolean =
+	if(self.association.oclIsUndefined())
 		then
 			false
 		else
-			true
+			self.association.inOneContext()
+		endif;
+
+-- checks if both ends of an association that is defined by a property are the same
+helper context DDD!Property def: associationIsReflexive() : Boolean =
+	if(self.association.oclIsUndefined())
+		then
+			false
+		else
+			self.association.isReflexive()
+		endif;
+
+-- checks if both ends of an association are the same
+helper context DDD!Association def: isReflexive() : Boolean =
+		(self.memberEnd.first().type = self.memberEnd.get(1).type);
+
+-- checks if the owing element of a property is processable as Entity
+helper context DDD!Property def: namespaceTransformableToEntity() : Boolean =
+	if(self.namespace.oclIsTypeOf(DDD!Association))
+		then
+			false
+		else
+			if(self.namespace.processableAsStereotype('Entity') 
+					or self.namespace.processableAsStereotype('ValueObject') 
+					or self.namespace.oclIsKindOf(DDD!Enumeration))
+				then
+					true
+				else
+					false
+			endif
 		endif;
 
 rule BoundedContext2MicroServiceAndDataModelWithoutAggregate {
 	from
-		p : DDD!Package (p.oclIsTypeOf(DDD!Package) and p.hasStereotype('BoundedContext') and p.getPackagedElementsByStereoType('AggregateRoot').size() = 0)
+		p : DDD!Package (p.oclIsTypeOf(DDD!Package) 
+			and p.hasStereotype('BoundedContext')
+			and p.getPackagedElementsByStereoType('AggregateRoot').size() = 0)
 	to
 		
 		fs: AJI!FunctionalServiceT (
@@ -312,13 +367,14 @@ rule BoundedContext2MicroServiceAndDataModelWithoutAggregate {
 			name <- p.name + 'Model',
 			entities <- p.getPackagedElementsByStereoType('Entity'),
 			entities <- p.getPackagedElementsByStereoType('ValueObject'),
-			entities <- p.getPackagedElementsByType(DDD!Enumeration)
+			entities <- p.getPackagedElementsByType(DDD!Enumeration, false)
 		)
 }
 
 rule BoundedContext2MicroServiceAndDataModelWithAggregate {
 	from
-		p : DDD!Package (p.oclIsTypeOf(DDD!Package) and p.hasStereotype('BoundedContext') and p.getPackagedElementsByStereoType('AggregateRoot').size() > 0)
+		p : DDD!Package (p.oclIsTypeOf(DDD!Package) and p.hasStereotype('BoundedContext') 
+			and p.getPackagedElementsByStereoType('AggregateRoot').size() > 0)
 	to
 		
 		fs: AJI!FunctionalServiceT (
@@ -341,7 +397,7 @@ rule BoundedContext2MicroServiceAndDataModelWithAggregate {
 			name <- p.name + 'Model',
 			entities <- p.getPackagedElementsByStereoType('Entity'),
 			entities <- p.getPackagedElementsByStereoType('ValueObject'),
-			entities <- p.getPackagedElementsByType(DDD!Enumeration),
+			entities <- p.getPackagedElementsByType(DDD!Enumeration, false),
 			entities <- aggRoot,
 			entities <- aggPart
 		)
@@ -354,7 +410,8 @@ rule Module2Log{
 	to	
 
 	do{
-		('[INFO] "Module" object with name "'+old.name+ '" was not converted, because there is no corresponding concept in AJIL').println();
+		('[INFO][DROP] "Module" element with name "'+old.name+ 
+				'" was not converted, because there is no corresponding concept in AJIL').println();
 	}	
 }
 
@@ -376,13 +433,18 @@ rule Enum2Entity{
 	to
 		new : AJI!EntityT(
 				name <- old.name,
-				attributes <- old.ownedLiteral
+				attributes <- old.ownedLiteral,
+				parent <- old.getGeneralization()
 			)
+	do{
+		('[INFO][DIFF] "Enumeration" element with name "'+old.name+ 
+				'" was converted to an EntityT object, because AJIL does not support Enumerations').println();
+	}	
 }
 
 rule Entity2Entity_AggregateRoot{
 	from
-		old : DDD!Class ((old.hasStereotype('Entity') or old.generalizationHasStereotype('Entity')) and old.hasStereotype('AggregateRoot'))
+		old : DDD!Class ((old.processableAsStereotype('Entity')) and old.processableAsStereotype('AggregateRoot'))
 		
 	to
 		new : AJI!EntityT(
@@ -393,13 +455,20 @@ rule Entity2Entity_AggregateRoot{
 				parent <- old.getGeneralization(),
 				domainModel <- thisModule.resolveTemp(old.generalizationBoundedContext(), 'dm')
 			)
+	do{
+		if(old.noStereotype()){
+			('[INFO][DIFF] Element "'
+			+old.name+ '" was converted to an EntityT object with AbstractAggregateRoot as parent,'+
+			'because its abstract class is an AggregateRoot and Entity').println();
+		}
+	}
 }
 
 
 rule Entity2Entity_NoAggregate{
 	from
-		old : DDD!Class ((old.hasStereotype('Entity') or old.generalizationHasStereotype('Entity')) 
-			and not (old.hasStereotype('AggregateRoot') or old.hasStereotype('AggregatePart')))
+		old : DDD!Class (old.processableAsStereotype('Entity')
+			and not (old.processableAsStereotype('AggregateRoot') or old.processableAsStereotype('AggregatePart')))
 	to
 		new : AJI!EntityT(
 				name <- old.name,
@@ -408,11 +477,17 @@ rule Entity2Entity_NoAggregate{
 				parent <- old.getGeneralization(),
 				domainModel <- thisModule.resolveTemp(old.generalizationBoundedContext(), 'dm')
 			)
+	do{
+		if(old.noStereotype()){
+			('[INFO][DIFF] Element "'+old.name+ 
+					'" was converted to an EntityT object, because its abstract class is an Entity').println();
+		}
+	}	
 }
 
 rule Entity2Entity_AggregatePart{
 	from
-		old : DDD!Class ((old.hasStereotype('Entity') or old.generalizationHasStereotype('Entity')) and old.hasStereotype('AggregatePart'))
+		old : DDD!Class ((old.processableAsStereotype('Entity')) and old.processableAsStereotype('AggregatePart'))
 		
 	to
 		new : AJI!EntityT(
@@ -429,22 +504,36 @@ rule Entity2Entity_AggregatePart{
 				name <- 'AggregateRoot',
 				target <- old.getAggregateRoot()
 			)
+	do{
+		if(old.noStereotype()){
+			('[INFO][DIFF] Element "'+old.name+
+					'" was converted to an EntityT object with AbstractAggregatePart as parent,'+
+					'because its abstract class is an AggregatePart and Entity').println();
+		}
+	}
 }
 
 rule ValueObject2Entity{
 	from
-		old : DDD!Class (old.hasStereotype('ValueObject') and not old.goUpToElementWithStereotype('BoundedContext').oclIsUndefined())
+		old : DDD!Class (old.processableAsStereotype('ValueObject') and not old.goUpToElementWithStereotype('BoundedContext').oclIsUndefined())
 		
 	to
 		new : AJI!EntityT(
 				name <- old.name,
 				attributes <- old.attribute
 			)
+	do{
+		if(old.noStereotype()){
+			('[INFO][DIFF] Element "'+old.name+ 
+					'" was converted to an EntityT object, because its abstract class is a ValueObject').println();
+		}
+	}
 }
 
 rule SharedModel2Entity{
 	from
-		old : DDD!Class (old.hasStereotype('ValueObject') and old.goUpToElementWithStereotype('BoundedContext').oclIsUndefined())
+		old : DDD!Class (old.processableAsStereotype('ValueObject')
+			and old.goUpToElementWithStereotype('BoundedContext').oclIsUndefined())
 	using{
 		abstraction : DDD!Abstraction = thisModule.getAbstractFromSharedModel(old).supplier.get(0);
 	}	
@@ -455,6 +544,12 @@ rule SharedModel2Entity{
 				domainModel <- thisModule.resolveTemp(abstraction.goUpToElementWithStereotype('BoundedContext'), 'dm'),
 				parent <- abstraction
 			)
+	do{
+		if(old.noStereotype()){
+			('[INFO][DIFF] Element "'+old.name+ 
+					'" was converted to an EntityT object, because its abstract class is a ValueObject').println();
+		}
+	}
 }
 
 rule Property2Attribute_Integer{
@@ -464,6 +559,9 @@ rule Property2Attribute_Integer{
 			new : AJI!IntegerT(
 				name <- old.name
 			)
+	do{
+		thisModule.checkStereotypeLossForProperty(old);
+	}
 }
 
 rule Property2Attribute_String{
@@ -473,6 +571,9 @@ rule Property2Attribute_String{
 			new : AJI!StringT(
 				name <- old.name
 			)
+	do{
+		thisModule.checkStereotypeLossForProperty(old);
+	}
 }
 
 rule Property2Attribute_Float{
@@ -482,6 +583,9 @@ rule Property2Attribute_Float{
 			new : AJI!FloatT(
 				name <- old.name
 			)
+	do{
+		thisModule.checkStereotypeLossForProperty(old);
+	}
 }
 
 rule Property2Attribute_Boolean{
@@ -491,6 +595,9 @@ rule Property2Attribute_Boolean{
 			new : AJI!BooleanT(
 				name <- old.name
 			)
+	do{
+		thisModule.checkStereotypeLossForProperty(old);
+	}
 }
 
 rule Property2Attribute_Undefined{
@@ -501,6 +608,12 @@ rule Property2Attribute_Undefined{
 			new : AJI!StringT(
 				name <- old.name
 			)
+	do{
+		('[INFO][DIFF] "Property" element with name "'+old.name+ 
+				'" was converted to a StringT object, '+
+				'because underspecified attributes are not supported in AJIL').println();
+		thisModule.checkStereotypeLossForProperty(old);
+	}	
 }
 
 rule EnumerationLiteral2Attribute{
@@ -510,19 +623,31 @@ rule EnumerationLiteral2Attribute{
 			new : AJI!StringT(
 				name <- old.name
 			)
+	do{
+		('[INFO][DIFF] "EnumerationLiteral" element with name "'+old.name+ 
+				'" was converted to a StringT object, because EnumerationLiterals are not a Concept in AJIL').println();
+	}
 }
 
 rule Property2Attribute_Association{
 	from
-		old : DDD!Property (not old.association.oclIsUndefined() and (old.namespace.hasStereotype('Entity') or old.namespace.hasStereotype('ValueObject'))) --and not old.isPropertyOfAssociation())
-		
+		old : DDD!Property (not old.association.oclIsUndefined() 
+			and not old.associationIsReflexive() and old.associationInOneBoundedContext()
+			and old.namespaceTransformableToEntity())
 	to	
 			new : AJI!EntityT(
 				name <- old.name
+				-- This should be right, but not sure if EntityT as datatype have a domain Model.
+				--domainModel <- thisModule.resolveTemp(old.goUpToElementWithStereotype('BoundedContext'), 'dm')
 			)
+	do{
+		('[INFO][DIFF] "Property" element with name "'+old.name+ 
+				'" was converted to a EntityT object, because EntityT is the only complex DataType in AJIL').println();
+		thisModule.checkStereotypeLossForProperty(old);
+	}
 }
 
-rule RepositoryOrService2ServiceInterface{
+rule SuitableRepositoryOrService2ServiceInterface{
 	from
 		old : DDD!Class (old.suitableForInterface())
 	to
@@ -530,6 +655,7 @@ rule RepositoryOrService2ServiceInterface{
 				name <- old.name + 'Interface',
 				abilities <- old.ownedOperation
 			)
+
 }
 
 --Checking the type with the first characters, because a regex search can be ambigoous with createReader or something
@@ -543,7 +669,41 @@ rule Operation2CreateAbility{
 				--No way to distinguish between multiple associations on a repo or service
 				subject <- old.getCorrectSubject()
 			)
+	do{
+		thisModule.checkStereotypeLossForOperation(old);
+	}
 }
+
+rule checkStereotypeLossForOperation(old : DDD!Operation){
+		do{
+			if(old.hasStereotype('Closure')){
+				('[INFO][LOSS] "Operation" element with name "'+old.name+ 
+						'" did not retain its Stereotype "Closure", '+
+						'because there is no corresponding concept in AJIL').println();
+			}
+			if(old.hasStereotype('ValidatesSpec')){
+				('[INFO][LOSS] "Operation" element with name "'+old.name+ 
+						'" did not retain its Stereotype "ValidatesSpec",'+
+						'because there is no corresponding concept in AJIL').println();
+			}
+			if(old.hasStereotype('SideEffectFree')){
+				('[INFO][LOSS] "Operation" element with name "'+old.name+ 
+						'" did not retain its Stereotype "SideEffectFree",'+
+						'because there is no corresponding concept in AJIL').println();
+			}
+	}
+}
+
+rule checkStereotypeLossForProperty(old : DDD!Property){
+		do{
+			if(old.hasStereotype('DefinesIdentity')){
+				('[INFO][LOSS] "Property" element with name "'+old.name+ 
+						'" did not retain its Stereotype "definesIdentity", '+
+						'because there is no corresponding concept in AJIL').println();
+			}
+	}
+}
+
 
 rule Operation2ReadAbility{
 	from
@@ -556,6 +716,9 @@ rule Operation2ReadAbility{
 				--No way to distinguish between multiple associations on a repo or service
 				subject <- old.getCorrectSubject()
 			)
+	do{
+		thisModule.checkStereotypeLossForOperation(old);
+	}
 }
 
 rule Operation2UpdateAbility{
@@ -568,6 +731,9 @@ rule Operation2UpdateAbility{
 				--No way to distinguish between multiple associations on a repo or service
 				subject <- old.getCorrectSubject()
 			)
+	do{
+		thisModule.checkStereotypeLossForOperation(old);
+	}
 }
 
 rule Operation2DeleteAbility{
@@ -581,6 +747,9 @@ rule Operation2DeleteAbility{
 				--No way to distinguish between multiple associations on a repo or service
 				subject <- old.getCorrectSubject()
 			)
+	do{
+		thisModule.checkStereotypeLossForOperation(old);
+	}
 }
 
 rule Operation2CustomAbility{
@@ -598,51 +767,58 @@ rule Operation2CustomAbility{
 				--No way to distinguish between multiple associations on a repo or service
 				subject <- old.getCorrectSubject()
 			)
+	do{
+		thisModule.checkStereotypeLossForOperation(old);
+	}
 }
 
 
-rule EntityAssociations{
+rule EntityAssociation2Relation{
 	from
-		old : DDD!Association (old.associationOriginHasStereotype('Entity') and not old.isManyToManyAssociation() 
-			and not old.isManyToOneAssociation())
+		old : DDD!Association ((old.associationOriginHasStereotype('Entity') 
+				or old.associationOriginHasStereotype('ValueObject')) and not old.isManyToManyAssociation() 
+			and not old.isManyToOneAssociation() and old.inOneContext() and not old.isReflexive())
 		
 	to	
 			new : AJI!RelationT(
 				target <- old.memberEnd.first().type,
 				source <- old.memberEnd.get(1).type,
 				multiplicity <-  if (old.memberEnd.first().upper = -1) then 'MANY' else 'ONE' endif
-				--name <- old.memberEnd.get(1).name + '->' + old.memberEnd.first().name
 			)
 }
 
 rule splitManyToManyEntityAssociations{
 	from
-		old : DDD!Association (old.associationOriginHasStereotype('Entity') and old.isManyToManyAssociation())
-		-- Checken ob Assoziationen zwischen Bounded Contexts sind
+		old : DDD!Association ((old.associationOriginHasStereotype('Entity')  
+				or old.associationOriginHasStereotype('ValueObject') )and old.isManyToManyAssociation() 
+				and old.inOneContext() and not old.isReflexive())
 	to	
 			new : AJI!RelationT(
 				target <- old.memberEnd.first().type,
 				source <- old.memberEnd.get(1).type,
 				multiplicity <- 'MANY'
-				--name <- '1: ' + old.memberEnd.get(1).name + '->' + old.memberEnd.first().name
 			),
 			
 			new2 : AJI!RelationT(
 				target <- old.memberEnd.get(1).type,
 				source <- old.memberEnd.first().type,
 				multiplicity <- 'MANY'
-				--name <- '2: ' + old.memberEnd.first().name + '->' + old.memberEnd.get(1).name
 			)
+	do{
+		('[INFO][DIFF] MANY to MANY association between "'+old.memberEnd.first().name+ 
+				'" and "'+old.memberEnd.get(1).name+'" was split into to two ONE to MANY associations').println();	
+	}	
 }
 
 rule Spec2Log{
 	from
-		old : DDD!Class (old.hasStereotype('Spec'))
+		old : DDD!Class (old.processableAsStereotype('Spec'))
 		
 	to	
 
 	do{
-		('[INFO] "Spec" object with name "'+old.name+ '" was not converted, because there is no corresponding concept in AJIL').println();
+		('[INFO][DROP] "Spec" element with name "'+old.name+ 
+				'" was not converted, because there is no corresponding concept in AJIL').println();
 	}	
 }
 
